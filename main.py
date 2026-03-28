@@ -1,10 +1,12 @@
 import discord
-import json
 import datetime
 import os
+import re
+import sqlite3
 from discord.ext import commands, tasks
 from discord import app_commands
 from dotenv import load_dotenv
+
 load_dotenv()
 
 # ================= CONFIG =================
@@ -28,8 +30,6 @@ STAFF_ROLES_IDS = [
     1463187013271556162
 ]
 
-ARQUIVO_FARM = "farm.json"
-
 # ================= BOT =================
 
 intents = discord.Intents.default()
@@ -41,18 +41,141 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 def is_staff(member: discord.Member):
     return any(role.id in STAFF_ROLES_IDS for role in member.roles)
 
+# ================= BANCO =================
+
+def conectar():
+    return sqlite3.connect("farm.db")
+
+def criar_tabela():
+    conn = conectar()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS farm (
+        user_id TEXT PRIMARY KEY,
+        nome TEXT,
+        ferramenta INTEGER,
+        plastico INTEGER
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS controle (
+        id INTEGER PRIMARY KEY,
+        ultimo_reset TEXT
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
 # ================= FARM =================
 
-def carregar_dados():
-    try:
-        with open(ARQUIVO_FARM, "r") as f:
-            return json.load(f)
-    except:
-        return {}
+def adicionar_farm(user_id, nome, ferramenta, plastico):
+    conn = conectar()
+    cursor = conn.cursor()
 
-def salvar_dados(dados):
-    with open(ARQUIVO_FARM, "w") as f:
-        json.dump(dados, f, indent=4)
+    cursor.execute("SELECT * FROM farm WHERE user_id = ?", (user_id,))
+    resultado = cursor.fetchone()
+
+    if resultado:
+        cursor.execute("""
+        UPDATE farm
+        SET ferramenta = ferramenta + ?, plastico = plastico + ?
+        WHERE user_id = ?
+        """, (ferramenta, plastico, user_id))
+    else:
+        cursor.execute("""
+        INSERT INTO farm (user_id, nome, ferramenta, plastico)
+        VALUES (?, ?, ?, ?)
+        """, (user_id, nome, ferramenta, plastico))
+
+    conn.commit()
+    conn.close()
+
+def pegar_ranking():
+    conn = conectar()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT nome, ferramenta, plastico,
+    (ferramenta + plastico) as total
+    FROM farm
+    ORDER BY total DESC
+    LIMIT 10
+    """)
+
+    dados = cursor.fetchall()
+    conn.close()
+    return dados
+
+def pegar_usuario(user_id):
+    conn = conectar()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT ferramenta, plastico FROM farm WHERE user_id = ?", (user_id,))
+    resultado = cursor.fetchone()
+
+    conn.close()
+    return resultado
+
+def resetar_farm():
+    conn = conectar()
+    cursor = conn.cursor()
+
+    cursor.execute("DELETE FROM farm")
+
+    conn.commit()
+    conn.close()
+
+# ================= CONTROLE RESET =================
+
+def precisa_resetar():
+    conn = conectar()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT ultimo_reset FROM controle WHERE id = 1")
+    resultado = cursor.fetchone()
+
+    agora = datetime.datetime.now()
+
+    if agora.weekday() != 5:
+        conn.close()
+        return False
+
+    if agora.hour < 2:
+        conn.close()
+        return False
+
+    if not resultado:
+        conn.close()
+        return True
+
+    ultimo = datetime.datetime.fromisoformat(resultado[0])
+
+    if ultimo.date() == agora.date():
+        conn.close()
+        return False
+
+    conn.close()
+    return True
+
+def salvar_reset():
+    conn = conectar()
+    cursor = conn.cursor()
+
+    agora = datetime.datetime.now().isoformat()
+
+    cursor.execute("""
+    INSERT INTO controle (id, ultimo_reset)
+    VALUES (1, ?)
+    ON CONFLICT(id) DO UPDATE SET ultimo_reset = excluded.ultimo_reset
+    """, (agora,))
+
+    conn.commit()
+    conn.close()
+
+# ================= FARM COMMANDS =================
 
 class Farm(app_commands.Group):
     def __init__(self):
@@ -60,52 +183,42 @@ class Farm(app_commands.Group):
 
     @app_commands.command(name="adicionar", description="Adicionar farm")
     async def adicionar(self, interaction: discord.Interaction, ferramenta: int, plastico: int):
-        dados = carregar_dados()
-        user_id = str(interaction.user.id)
 
-        if user_id not in dados:
-            dados[user_id] = {
-                "nome": interaction.user.display_name,
-                "ferramenta": 0,
-                "plastico": 0
-            }
+        adicionar_farm(
+            str(interaction.user.id),
+            interaction.user.display_name,
+            ferramenta,
+            plastico
+        )
 
-        dados[user_id]["ferramenta"] += ferramenta
-        dados[user_id]["plastico"] += plastico
-
-        salvar_dados(dados)
+        dados = pegar_usuario(str(interaction.user.id))
 
         await interaction.response.send_message(
             f"✅ Farm registrado!\n\n"
             f"🔧 Ferramenta: +{ferramenta}\n"
             f"🧪 Plástico: +{plastico}\n\n"
             f"📊 Total:\n"
-            f"🔧 {dados[user_id]['ferramenta']}\n"
-            f"🧪 {dados[user_id]['plastico']}"
+            f"🔧 {dados[0]}\n"
+            f"🧪 {dados[1]}"
         )
 
     @app_commands.command(name="ranking", description="Ranking de farm")
     async def ranking(self, interaction: discord.Interaction):
-        dados = carregar_dados()
+
+        dados = pegar_ranking()
 
         if not dados:
             return await interaction.response.send_message("❌ Nenhum dado ainda.")
-
-        ranking = sorted(
-            dados.items(),
-            key=lambda x: x[1]["ferramenta"] + x[1]["plastico"],
-            reverse=True
-        )
 
         embed = discord.Embed(
             title="🏆 Ranking de Farm",
             color=discord.Color.gold()
         )
 
-        for i, (user_id, info) in enumerate(ranking[:10], start=1):
+        for i, (nome, ferramenta, plastico, total) in enumerate(dados, start=1):
             embed.add_field(
-                name=f"{i}º - {info['nome']}",
-                value=f"🔧 {info['ferramenta']} | 🧪 {info['plastico']}",
+                name=f"{i}º - {nome}",
+                value=f"🔧 {ferramenta} | 🧪 {plastico}",
                 inline=False
             )
 
@@ -113,40 +226,26 @@ class Farm(app_commands.Group):
 
     @app_commands.command(name="ver", description="Ver farm de um membro")
     async def ver(self, interaction: discord.Interaction, membro: discord.Member):
-        dados = carregar_dados()
-        user_id = str(membro.id)
 
-        if user_id not in dados:
+        resultado = pegar_usuario(str(membro.id))
+
+        if not resultado:
             return await interaction.response.send_message("❌ Esse usuário não tem farm.")
 
         await interaction.response.send_message(
             f"📊 Farm de {membro.mention}:\n\n"
-            f"🔧 {dados[user_id]['ferramenta']}\n"
-            f"🧪 {dados[user_id]['plastico']}"
+            f"🔧 {resultado[0]}\n"
+            f"🧪 {resultado[1]}"
         )
 
-    @app_commands.command(name="relatorio", description="Relatório geral")
-    async def relatorio(self, interaction: discord.Interaction):
-        if not is_staff(interaction.user):
-            return await interaction.response.send_message("❌ Apenas staff.", ephemeral=True)
+# ================= RESET =================
 
-        dados = carregar_dados()
-
-        texto = ""
-        for info in dados.values():
-            texto += f"{info['nome']} | 🔧 {info['ferramenta']} | 🧪 {info['plastico']}\n"
-
-        await interaction.response.send_message(f"📊 Relatório:\n\n{texto}")
-
-# ================= RESET SEMANAL =================
-
-@tasks.loop(hours=1)
+@tasks.loop(minutes=10)
 async def reset_semanal():
-    agora = datetime.datetime.now()
-
-    if agora.weekday() == 4 and agora.hour == 0:  # sexta meia-noite
-        salvar_dados({})
-        print("🧹 Farm resetado (sexta-feira)")
+    if precisa_resetar():
+        resetar_farm()
+        salvar_reset()
+        print("🧹 Reset automático realizado!")
 
 # ================= REGISTRO =================
 
@@ -218,18 +317,19 @@ class TicketView(discord.ui.View):
             if role.id in STAFF_ROLES_IDS:
                 overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
 
+        nome_limpo = re.sub(r'[^a-z0-9-]', '-', user.display_name.lower())
+
         canal = await guild.create_text_channel(
-            name=f"{user.display_name}".lower(),
+            name=nome_limpo[:20],
             category=categoria,
             overwrites=overwrites
         )
 
-        # 👇 MENSAGEM AUTOMÁTICA
         await canal.send(
             f"👋 {user.mention}\n\n"
             f"💰 Use:\n"
             f"`/farm adicionar ferramenta:100 plastico:100`\n\n"
-            f"📅 Pagamento semanal (sexta-feira)"
+            f"📅 Pagamento semanal (sábado 02:00)"
         )
 
         await interaction.followup.send(f"✅ Ticket criado: {canal.mention}", ephemeral=True)
@@ -257,6 +357,8 @@ async def setupticket(interaction: discord.Interaction):
 
 @bot.event
 async def on_ready():
+    criar_tabela()
+
     bot.add_view(TicketView())
 
     guild = discord.Object(id=GUILD_ID)
