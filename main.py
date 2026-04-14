@@ -54,8 +54,8 @@ def criar_tabela():
     CREATE TABLE IF NOT EXISTS farm (
         user_id TEXT PRIMARY KEY,
         nome TEXT,
-        ferramenta INTEGER,
-        plastico INTEGER
+        alvejante INTEGER,
+        papel INTEGER
     )
     """)
 
@@ -71,7 +71,7 @@ def criar_tabela():
 
 # ================= FARM =================
 
-def adicionar_farm(user_id, nome, ferramenta, plastico):
+def adicionar_farm(user_id, nome, alvejante, papel):
     conn = conectar()
     cursor = conn.cursor()
 
@@ -81,14 +81,14 @@ def adicionar_farm(user_id, nome, ferramenta, plastico):
     if resultado:
         cursor.execute("""
         UPDATE farm
-        SET ferramenta = ferramenta + ?, plastico = plastico + ?
+        SET alvejante = alvejante + ?, papel = papel + ?
         WHERE user_id = ?
-        """, (ferramenta, plastico, user_id))
+        """, (alvejante, papel, user_id))
     else:
         cursor.execute("""
-        INSERT INTO farm (user_id, nome, ferramenta, plastico)
+        INSERT INTO farm (user_id, nome, alvejante, papel)
         VALUES (?, ?, ?, ?)
-        """, (user_id, nome, ferramenta, plastico))
+        """, (user_id, nome, alvejante, papel))
 
     conn.commit()
     conn.close()
@@ -98,8 +98,8 @@ def pegar_ranking():
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT nome, ferramenta, plastico,
-    (ferramenta + plastico) as total
+    SELECT nome, alvejante, papel,
+    (alvejante + papel) as total
     FROM farm
     ORDER BY total DESC
     LIMIT 10
@@ -113,7 +113,7 @@ def pegar_usuario(user_id):
     conn = conectar()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT ferramenta, plastico FROM farm WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT alvejante, papel FROM farm WHERE user_id = ?", (user_id,))
     resultado = cursor.fetchone()
 
     conn.close()
@@ -182,21 +182,21 @@ class Farm(app_commands.Group):
         super().__init__(name="farm", description="Sistema de farm da fac")
 
     @app_commands.command(name="adicionar", description="Adicionar farm")
-    async def adicionar(self, interaction: discord.Interaction, ferramenta: int, plastico: int):
+    async def adicionar(self, interaction: discord.Interaction, alvejante: int, papel: int):
 
         adicionar_farm(
             str(interaction.user.id),
             interaction.user.display_name,
-            ferramenta,
-            plastico
+            alvejante,
+            papel
         )
 
         dados = pegar_usuario(str(interaction.user.id))
 
         await interaction.response.send_message(
             f"✅ Farm registrado!\n\n"
-            f"🔧 Ferramenta: +{ferramenta}\n"
-            f"🧪 Plástico: +{plastico}\n\n"
+            f"🔧 Alvejante: +{alvejante}\n"
+            f"🧪 Papel: +{papel}\n\n"
             f"📊 Total:\n"
             f"🔧 {dados[0]}\n"
             f"🧪 {dados[1]}"
@@ -215,10 +215,10 @@ class Farm(app_commands.Group):
             color=discord.Color.gold()
         )
 
-        for i, (nome, ferramenta, plastico, total) in enumerate(dados, start=1):
+        for i, (nome, alvejante, papel, total) in enumerate(dados, start=1):
             embed.add_field(
                 name=f"{i}º - {nome}",
-                value=f"🔧 {ferramenta} | 🧪 {plastico}",
+                value=f"🔧 {alvejante} | 🧪 {papel}",
                 inline=False
             )
 
@@ -328,7 +328,7 @@ class TicketView(discord.ui.View):
         await canal.send(
             f"👋 {user.mention}\n\n"
             f"💰 Use:\n"
-            f"`/farm adicionar ferramenta:100 plastico:100`\n\n"
+            f"`/farm adicionar Alvejante:100 Papel:100`\n\n"
             f"📅 Pagamento semanal (sábado 02:00)"
         )
 
