@@ -1,0 +1,8 @@
+app = "botregistroticketdiscord"
+primary_region = "gru"
+
+[processes]
+  app = "python main.py"
+
+[env]
+  PYTHONUNBUFFERED = "1"
